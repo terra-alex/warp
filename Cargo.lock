@@ -16053,6 +16053,7 @@ dependencies = [
  "warp_util",
  "warpui",
  "warpui_core",
+ "windows 0.62.2",
 ]
 
 [[package]]
