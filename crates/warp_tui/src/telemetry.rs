@@ -1,10 +1,78 @@
 //! Telemetry for the `warp-tui` front-end.
+use std::ffi::{OsStr, OsString};
 
 use serde_json::{Value, json};
 use strum_macros::{EnumDiscriminants, EnumIter};
 use warp_core::telemetry::{EnablementState, TelemetryEvent, TelemetryEventDesc};
+const MAX_TERM_PROGRAM_CHARS: usize = 64;
+
+#[derive(Clone, Copy, Debug)]
+enum TuiHostMultiplexer {
+    None,
+    Tmux,
+    Screen,
+    Zellij,
+}
+
+impl TuiHostMultiplexer {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Tmux => "tmux",
+            Self::Screen => "screen",
+            Self::Zellij => "zellij",
+        }
+    }
+}
+
 #[derive(Debug)]
-pub(crate) struct TuiStartupTelemetryEvent;
+pub(crate) struct TuiStartupTelemetryEvent {
+    term_program: Option<String>,
+    multiplexer: TuiHostMultiplexer,
+}
+
+impl TuiStartupTelemetryEvent {
+    pub(crate) fn from_environment() -> Self {
+        Self {
+            term_program: sanitize_term_program(std::env::var_os("TERM_PROGRAM")),
+            multiplexer: detect_multiplexer(
+                std::env::var_os("TMUX").as_deref(),
+                std::env::var_os("STY").as_deref(),
+                std::env::var_os("ZELLIJ").as_deref(),
+                std::env::var_os("ZELLIJ_SESSION_NAME").as_deref(),
+            ),
+        }
+    }
+}
+
+fn sanitize_term_program(value: Option<OsString>) -> Option<String> {
+    let value = value?.into_string().ok()?;
+    let sanitized = value
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_TERM_PROGRAM_CHARS)
+        .collect::<String>();
+    (!sanitized.is_empty()).then_some(sanitized)
+}
+
+fn detect_multiplexer(
+    tmux: Option<&OsStr>,
+    screen: Option<&OsStr>,
+    zellij: Option<&OsStr>,
+    zellij_session_name: Option<&OsStr>,
+) -> TuiHostMultiplexer {
+    let is_present = |value: Option<&OsStr>| value.is_some_and(|value| !value.is_empty());
+    if is_present(tmux) {
+        TuiHostMultiplexer::Tmux
+    } else if is_present(screen) {
+        TuiHostMultiplexer::Screen
+    } else if is_present(zellij) || is_present(zellij_session_name) {
+        TuiHostMultiplexer::Zellij
+    } else {
+        TuiHostMultiplexer::None
+    }
+}
 
 impl TelemetryEvent for TuiStartupTelemetryEvent {
     fn name(&self) -> &'static str {
@@ -12,7 +80,10 @@ impl TelemetryEvent for TuiStartupTelemetryEvent {
     }
 
     fn payload(&self) -> Option<Value> {
-        None
+        Some(json!({
+            "term_program": self.term_program,
+            "multiplexer": self.multiplexer.as_str(),
+        }))
     }
 
     fn description(&self) -> &'static str {
@@ -28,7 +99,10 @@ impl TelemetryEvent for TuiStartupTelemetryEvent {
     }
 
     fn event_descs() -> impl Iterator<Item = Box<dyn TelemetryEventDesc>> {
-        std::iter::once(Box::new(Self) as Box<dyn TelemetryEventDesc>)
+        std::iter::once(Box::new(Self {
+            term_program: None,
+            multiplexer: TuiHostMultiplexer::None,
+        }) as Box<dyn TelemetryEventDesc>)
     }
 }
 
