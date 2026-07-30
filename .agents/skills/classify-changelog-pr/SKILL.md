@@ -13,6 +13,7 @@ This document provides classification rules for PRs that lack explicit `CHANGELO
 - **IMPROVEMENT** — Enhances an existing feature in a way users would notice (performance, UX, new options).
 - **BUG-FIX** — Fixes a user-visible bug or regression.
 - **OZ** — Changes to Oz / AI agent capabilities. At most 4 per release in the stable changelog.
+- **TUI** — User-visible changes specific to the Warp Agent CLI/headless TUI.
 - **NONE** — Explicitly opt out of changelog inclusion. Handled upstream by `fetch_prs.py` marker extraction.
 
 ## Decision rules
@@ -28,6 +29,13 @@ This document provides classification rules for PRs that lack explicit `CHANGELO
 ### Always include
 - PRs with explicit `CHANGELOG-*` markers (handled before this guidance applies)
 - PRs that fix a crash, data loss, or security issue — even without a marker
+
+### TUI surface classification
+- Treat explicit `CHANGELOG-TUI` and `CHANGELOG-OZ` markers as authoritative surface choices.
+- Otherwise, classify a user-visible entry as `TUI` when `commit_subject` contains `TUI` as a standalone token.
+- For stable releases, also use the PR title/body and TUI-owned paths such as `crates/warp_tui` or `crates/warpui_core/src/elements/tui`. If metadata is ambiguous, inspect the commit diff.
+- Do not classify a shared-core change as `TUI` from its file paths alone; confirm that the behavior is specific to the headless TUI.
+- A TUI-classified entry belongs only in the TUI category, not in the regular New Feature, Improvement, or Bug Fix categories.
 
 ### Conditional on channel
 - **Stable channel:** Only include changes that are live for all users. Exclude PRs gated behind `DOGFOOD_FLAGS` or `PREVIEW_FLAGS`.

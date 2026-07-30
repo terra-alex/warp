@@ -54,6 +54,7 @@ The script outputs JSON to stdout with this structure:
       "number": 1234,
       "url": "https://github.com/warpdotdev/warp/pull/1234",
       "title": "...",
+      "commit_subject": "... (#1234)",
       "author": "username",
       "body": "...",
       "labels": ["..."],
@@ -76,7 +77,7 @@ The script outputs JSON to stdout with this structure:
 }
 ```
 
-Use the top-level `number`, `url`, `author`, `body`, `labels`, `changed_files`, and `source_repo` fields as the source of truth. `internal_pr` is audit-only and must never be used for contributor attribution or user-facing changelog links. If `url` is empty, omit the PR link from user-facing markdown rather than synthesizing one.
+Use the top-level `number`, `url`, `commit_subject`, `author`, `body`, `labels`, `changed_files`, and `source_repo` fields as the source of truth. `internal_pr` is audit-only and must never be used for contributor attribution or user-facing changelog links. If `url` is empty, omit the PR link from user-facing markdown rather than synthesizing one.
 
 ### Step 3 — Classify contributors
 
@@ -146,6 +147,7 @@ The `--org` flag checks each reporter's org membership via the GitHub API, filte
 Whenever the markdown draft credits a PR author, contributor, or issue reporter, render the username as a GitHub profile link such as `[@username](https://github.com/username)`.
 
 ### Step 6 — Classify unmarked PRs
+First determine the changelog surface for every PR. Explicit `CHANGELOG-TUI` and `CHANGELOG-OZ` markers are authoritative. Otherwise, if `commit_subject` contains `TUI` as a standalone case-insensitive token, route any explicit New Feature, Improvement, or Bug Fix text to `TUI` instead of its regular category. This keeps TUI changes out of the desktop changelog even when an existing generic marker was used.
 
 For each PR that has no explicit `CHANGELOG-*` entries, decide whether to include it and under which category.
 
@@ -183,7 +185,8 @@ Combine explicit entries (Step 2) and inferred entries (Step 6) into the final r
 1. `NEW-FEATURE` — New Features
 2. `IMPROVEMENT` — Improvements
 3. `BUG-FIX` — Bug Fixes
-4. `OZ` — Oz Updates
+4. `TUI` — TUI Updates
+5. `OZ` — Oz Updates
 
 PRs marked with `CHANGELOG-NONE` are explicitly opted out and must never appear in the changelog markdown.
 
@@ -209,6 +212,9 @@ Write two files to `output_dir`:
 
 ## Bug Fixes
 - Fixed crash on startup ([#1236](https://github.com/warpdotdev/warp/pull/1236))
+
+## TUI Updates
+- Added inline command menus to Warp Agent CLI ([#1238](https://github.com/warpdotdev/warp/pull/1238))
 
 ## Oz Updates
 - Improved agent memory ([#1237](https://github.com/warpdotdev/warp/pull/1237))
