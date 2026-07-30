@@ -120,6 +120,7 @@ warp = { workspace = true, features = ["tui", "test-util"] }
 release_bundle = ["warp/release_bundle"]
 # Enable Rust Sentry reporting without the GUI-only Cocoa SDK.
 crash_reporting = ["warp/crash_reporting"]
+record_app_active_events = ["warp/record_app_active_events"]
 # Self-contained TUI build (the binary is not inside a `.app` bundle). Enables
 # `warp/standalone`, which turns on `warp_core/standalone` so
 # `warp_core::paths::bundled_resources_dir()` resolves the sibling `resources/`
