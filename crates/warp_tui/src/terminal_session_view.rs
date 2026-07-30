@@ -116,6 +116,10 @@ use crate::skills_menu::{TuiSkillMenuEvent, TuiSkillMenuModel};
 use crate::slash_commands::TuiSlashCommandModel;
 use crate::statusline_config_view::{TuiStatuslineConfigEvent, TuiStatuslineConfigView};
 use crate::tab_bar::{TuiTabBarConfig, TuiTabBarEvent, TuiTabBarView};
+use crate::telemetry::{
+    TuiConversationMenuTelemetryEvent, TuiConversationRestoreTelemetryEvent,
+    TuiConversationRestoreTelemetryState, TuiConversationRestoreTelemetryTarget,
+};
 use crate::terminal_background::probed_colors;
 use crate::terminal_content_element::TuiTerminalContentElement;
 use crate::terminal_use::{
@@ -476,6 +480,10 @@ impl TuiConversationRestoreOrigin {
             }
         }
     }
+
+    fn records_telemetry(self) -> bool {
+        matches!(self, Self::ConversationList)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -484,12 +492,22 @@ pub(crate) enum TuiConversationRestoreTarget {
     Server(ServerConversationToken),
 }
 
+impl TuiConversationRestoreTarget {
+    fn telemetry_target(&self) -> TuiConversationRestoreTelemetryTarget {
+        match self {
+            Self::Local(_) => TuiConversationRestoreTelemetryTarget::Local,
+            Self::Server(_) => TuiConversationRestoreTelemetryTarget::Server,
+        }
+    }
+}
+
 #[derive(Default)]
 enum ConversationRestoreState {
     #[default]
     Idle,
     Loading {
         origin: TuiConversationRestoreOrigin,
+        target: TuiConversationRestoreTelemetryTarget,
         request_id: u64,
         future: Option<SpawnedFutureHandle>,
     },
@@ -2597,11 +2615,22 @@ impl TuiTerminalSessionView {
         }
         self.next_restore_request_id = self.next_restore_request_id.wrapping_add(1);
         let request_id = self.next_restore_request_id;
+        let telemetry_target = target.telemetry_target();
         self.conversation_restore_state = ConversationRestoreState::Loading {
             origin,
+            target: telemetry_target,
             request_id,
             future: None,
         };
+        if origin.records_telemetry() {
+            warp::send_telemetry_from_ctx!(
+                TuiConversationRestoreTelemetryEvent {
+                    state: TuiConversationRestoreTelemetryState::Started,
+                    target: telemetry_target,
+                },
+                ctx
+            );
+        }
 
         ctx.notify();
         let future =
@@ -2681,7 +2710,7 @@ impl TuiTerminalSessionView {
             return;
         }
 
-        self.replace_conversation_surface(*conversation, origin, ctx);
+        self.replace_conversation_surface(*conversation, origin, target.telemetry_target(), ctx);
     }
 
     /// Discards the retained child-agent sessions of a previously restored
@@ -2741,6 +2770,7 @@ impl TuiTerminalSessionView {
         &mut self,
         conversation: AIConversation,
         origin: TuiConversationRestoreOrigin,
+        telemetry_target: TuiConversationRestoreTelemetryTarget,
         ctx: &mut ViewContext<Self>,
     ) {
         let previous_conversation_id = self
@@ -2812,6 +2842,15 @@ impl TuiTerminalSessionView {
         self.conversation_restore_state = ConversationRestoreState::Idle;
         self.refresh_exit_summary(ctx);
         self.focus_input_if_active(ctx);
+        if origin.records_telemetry() {
+            warp::send_telemetry_from_ctx!(
+                TuiConversationRestoreTelemetryEvent {
+                    state: TuiConversationRestoreTelemetryState::Succeeded,
+                    target: telemetry_target,
+                },
+                ctx
+            );
+        }
         ctx.notify();
     }
 
@@ -2834,7 +2873,13 @@ impl TuiTerminalSessionView {
 
     fn cancel_conversation_restore(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let state = std::mem::take(&mut self.conversation_restore_state);
-        let ConversationRestoreState::Loading { future, .. } = state else {
+        let ConversationRestoreState::Loading {
+            origin,
+            target,
+            future,
+            ..
+        } = state
+        else {
             self.conversation_restore_state = state;
             return false;
         };
@@ -2842,6 +2887,15 @@ impl TuiTerminalSessionView {
             future.abort();
         }
         self.next_restore_request_id = self.next_restore_request_id.wrapping_add(1);
+        if origin.records_telemetry() {
+            warp::send_telemetry_from_ctx!(
+                TuiConversationRestoreTelemetryEvent {
+                    state: TuiConversationRestoreTelemetryState::Cancelled,
+                    target,
+                },
+                ctx
+            );
+        }
         self.focus_input_if_active(ctx);
         ctx.notify();
         true
@@ -2853,12 +2907,13 @@ impl TuiTerminalSessionView {
         message: String,
         ctx: &mut ViewContext<Self>,
     ) {
-        let origin = match &self.conversation_restore_state {
+        let (origin, target) = match &self.conversation_restore_state {
             ConversationRestoreState::Loading {
                 origin,
+                target,
                 request_id: active_request_id,
                 ..
-            } if *active_request_id == request_id => *origin,
+            } if *active_request_id == request_id => (*origin, *target),
             ConversationRestoreState::Idle
             | ConversationRestoreState::Failed(_)
             | ConversationRestoreState::Loading { .. } => return,
@@ -2868,6 +2923,13 @@ impl TuiTerminalSessionView {
                 self.conversation_restore_state = ConversationRestoreState::Failed(message);
             }
             TuiConversationRestoreOrigin::ConversationList => {
+                warp::send_telemetry_from_ctx!(
+                    TuiConversationRestoreTelemetryEvent {
+                        state: TuiConversationRestoreTelemetryState::Failed,
+                        target,
+                    },
+                    ctx
+                );
                 self.conversation_restore_state = ConversationRestoreState::Idle;
                 self.show_transient_hint(message, ctx);
                 self.focus_input_if_active(ctx);
@@ -3890,6 +3952,7 @@ impl TuiTerminalSessionView {
         entry_id: AgentConversationEntryId,
         ctx: &mut ViewContext<Self>,
     ) {
+        warp::send_telemetry_from_ctx!(TuiConversationMenuTelemetryEvent::ItemSelected, ctx);
         if self.is_conversation_restore_loading() {
             self.show_transient_hint(SWITCH_LOADING_HINT.to_owned(), ctx);
             return;
