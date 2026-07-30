@@ -212,6 +212,9 @@ impl<T: TuiView, R: TuiTerminal> TuiScreen<T, R> {
                 Err(error) => report_error!(error.context("error dispatching keystroke")),
             }
         }
+        if event.records_user_activity() {
+            App::record_last_active_timestamp();
+        }
 
         // Element-tree pass: walk the last rendered+laid-out element tree.
         // Access the two presenter fields directly so Rust sees disjoint borrows.

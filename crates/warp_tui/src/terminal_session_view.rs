@@ -18,27 +18,31 @@ use warp::settings::{
 use warp::tui_export::{
     AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
     AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
-    ActiveSession, ActiveSessionEvent, AgentConversationEntryId, AgentConversationListEntryState,
-    AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, Appearance, BlockId,
-    BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
-    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
-    CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, CancellationReason, ChangelogModel,
-    ChangelogRequestType, CloudConversationData, CommandExecutionSource, ConversationFileExport,
-    ConversationSelection, ConversationSelectionHandle, ExecuteCommandEvent,
-    GetRelevantFilesController, GitHubRepoModel, GitRepoStatusModel, LLMId, LLMPreferences,
-    LLMPreferencesEvent, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData,
-    ModelEvent, ParsedSlashCommandInput, PersistenceWriter, PtyIntent, PtyIntentEvent,
-    QueuedQueryEvent, QueuedQueryModel, RepoDetectionSessionType, RepoDetectionSource,
-    ServerConversationToken, Sessions, ShellCommandExecutorEvent, SizeInfo, SizeUpdate,
-    SkillReference, SlashCommandDataSource as _, SlashCommandKind, SlashCommandSelectionBehavior,
-    StartAgentExecutorEvent, StartAgentRequest, StaticCommand, TerminalModel, TerminalSurface,
-    TerminalSurfaceInit, TranscriptScope, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
-    TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind, TuiUserInfoManager,
-    TuiUserInfoManagerEvent, TuiZeroStateDataSource, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD,
-    block_context_from_terminal_model, build_slash_command_mixer, detect_possible_git_repo,
-    export_conversation_markdown, log_out_tui, maybe_build_ai_query_upsert_event,
-    prepare_conversation_block_restoration, record_autodetection_toggle_from_slash_command,
-    record_saved_prompt_accepted, record_static_slash_command_accepted, saved_prompt_text_for_id,
+    ActiveSession, ActiveSessionEvent, AfterBlockCompletedEvent, AgentConversationEntryId,
+    AgentConversationListEntryState, AgentConversationsModel, AgentInteractionMetadata,
+    AgentViewEntryOrigin, Appearance, BlockId, BlockType, BlocklistAIActionEvent,
+    BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel,
+    BlocklistOrchestrationTelemetryEvent, CLISubagentController, CLISubagentEvent,
+    CLISubagentTarget, COMMAND_REGISTRY, CancellationReason, ChangelogModel, ChangelogRequestType,
+    CloudConversationData, CommandExecutionSource, ConversationFileExport, ConversationSelection,
+    ConversationSelectionHandle, ExecuteCommandEvent, GetRelevantFilesController, GitHubRepoModel,
+    GitRepoStatusModel, InputSettings, LLMId, LLMPreferences, LLMPreferencesEvent,
+    LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData, ModelEvent,
+    ParsedSlashCommandInput, PersistenceWriter, PillBarActionKind, PillBarInteractionEvent,
+    PillBarPillKind, PillSwitchOutcome, PtyIntent, PtyIntentEvent, QueuedQueryEvent,
+    QueuedQueryModel, RepoDetectionSessionType, RepoDetectionSource, ServerConversationToken,
+    SessionSettings, Sessions, ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference,
+    SlashCommandDataSource as _, SlashCommandKind, SlashCommandSelectionBehavior,
+    StartAgentExecutorEvent, StartAgentRequest, StaticCommand, TelemetryEvent, TerminalModel,
+    TerminalSurface, TerminalSurfaceInit, TranscriptScope, TuiMcpAction, TuiMcpManager,
+    TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind,
+    TuiUserInfoManager, TuiUserInfoManagerEvent, TuiZeroStateDataSource, UserTakeOverReason,
+    WAKEUP_THROTTLE_PERIOD, block_context_from_terminal_model, build_slash_command_mixer,
+    detect_possible_git_repo, export_conversation_markdown, log_out_tui,
+    maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
+    record_autodetection_toggle_from_slash_command, record_saved_prompt_accepted,
+    record_static_slash_command_accepted, saved_prompt_text_for_id,
     slash_command_selection_behavior, slash_commands, throttle,
 };
 use warp_core::channel::{Channel, ChannelState};
@@ -908,6 +912,80 @@ impl TuiTerminalSessionView {
     fn refresh_input_focus(&mut self, ctx: &mut ViewContext<Self>) {
         self.focus_current_owner_if_active(ctx);
         ctx.notify();
+    }
+
+    fn emit_input_buffer_submitted_telemetry(&self, ctx: &mut ViewContext<Self>) {
+        let input_model = self.ai_input_model.as_ref(ctx);
+        let block_id = self.terminal_model.lock().active_block_id().clone();
+        warp::send_telemetry_from_ctx!(
+            TelemetryEvent::InputBufferSubmitted {
+                input_type: input_model.input_type(),
+                is_locked: input_model.is_input_type_locked(),
+                input_type_decision_source: input_model.last_ai_autodetection_source(),
+                was_lock_set_with_empty_buffer: input_model.was_lock_set_with_empty_buffer(),
+                block_id,
+            },
+            ctx
+        );
+    }
+
+    fn emit_block_completed_telemetry(
+        &self,
+        completed: &AfterBlockCompletedEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(delay) = completed.command_finished_to_precmd_delay else {
+            return;
+        };
+        let honor_ps1_enabled = match &completed.block_type {
+            BlockType::User(user_block) => user_block.serialized_block.honor_ps1,
+            BlockType::BootstrapVisible(serialized_block) => serialized_block.honor_ps1,
+            BlockType::BootstrapHidden
+            | BlockType::Restored
+            | BlockType::InBandCommand
+            | BlockType::Background(_)
+            | BlockType::Static => *SessionSettings::as_ref(ctx).honor_ps1,
+        };
+        let BlockType::User(user_block) = &completed.block_type else {
+            return;
+        };
+        warp::send_telemetry_from_ctx!(
+            TelemetryEvent::BlockCompleted {
+                block_finished_to_precmd_delay_ms: delay.as_millis() as u64,
+                honor_ps1_enabled,
+                num_secrets_redacted: completed.num_secrets_obfuscated,
+                num_output_lines: user_block.num_output_lines,
+                num_output_lines_truncated: user_block.num_output_lines_truncated,
+                terminal_session_id: user_block.serialized_block.session_id,
+                is_udi_enabled: InputSettings::as_ref(ctx)
+                    .is_universal_developer_input_enabled(ctx),
+                is_in_agent_view: true,
+            },
+            ctx
+        );
+        if ChannelState::channel().is_dogfood() {
+            let duration = match (
+                user_block.serialized_block.start_ts,
+                user_block.serialized_block.completed_ts,
+            ) {
+                (Some(start), Some(completed)) => (completed - start).to_std().unwrap_or_default(),
+                (None, _) | (_, None) => Duration::default(),
+            };
+            warp::send_telemetry_from_ctx!(
+                TelemetryEvent::BlockCompletedOnDogfoodOnly {
+                    block_finished_to_precmd_delay_ms: delay.as_millis() as u64,
+                    honor_ps1_enabled,
+                    num_secrets_redacted: completed.num_secrets_obfuscated,
+                    num_output_lines: user_block.num_output_lines,
+                    num_output_lines_truncated: user_block.num_output_lines_truncated,
+                    command: user_block.command.clone(),
+                    duration,
+                    exit_code: user_block.serialized_block.exit_code,
+                    terminal_session_id: user_block.serialized_block.session_id,
+                },
+                ctx
+            );
+        }
     }
 
     fn focus_blocking_input_source(source: BlockingInputSource, ctx: &mut ViewContext<Self>) {
@@ -1802,6 +1880,9 @@ impl TuiTerminalSessionView {
             ModelEvent::BlockCompleted(completed) => {
                 view.handle_block_completed(&completed.block_id, ctx);
             }
+            ModelEvent::AfterBlockCompleted(completed) => {
+                view.emit_block_completed_telemetry(completed, ctx);
+            }
             ModelEvent::AfterBlockStarted { .. } => {
                 view.refresh_input_focus(ctx);
                 ctx.notify();
@@ -1817,11 +1898,14 @@ impl TuiTerminalSessionView {
             ModelEvent::Typeahead => view.handle_typeahead_event(ctx),
             ModelEvent::BlockMetadataReceived(_)
             | ModelEvent::BlockWorkingDirectoryUpdated(_)
-            | ModelEvent::BackgroundBlockStarted
             | ModelEvent::TerminalClear
             | ModelEvent::PromptUpdated
             | ModelEvent::Handler(_)
             | ModelEvent::FinishUpdate(_) => ctx.notify(),
+            ModelEvent::BackgroundBlockStarted => {
+                warp::send_telemetry_from_ctx!(TelemetryEvent::BackgroundBlockStarted, ctx);
+                ctx.notify();
+            }
             _ => {}
         });
         // Re-render when the configured statusline or usage-display mode
@@ -2193,6 +2277,25 @@ impl TuiTerminalSessionView {
         let Some(session_id) = session_id else {
             return;
         };
+        if let Some(snapshot) = self.compute_orchestration_tab_snapshot(ctx) {
+            let pill_kind = if conversation_id == snapshot.root_conversation_id {
+                PillBarPillKind::Orchestrator
+            } else {
+                PillBarPillKind::Child
+            };
+            warp::send_telemetry_from_ctx!(
+                BlocklistOrchestrationTelemetryEvent::PillBarInteraction(PillBarInteractionEvent {
+                    action: PillBarActionKind::Switch,
+                    pill_kind,
+                    total_pills: snapshot.children.len() + 1,
+                    total_pinned: 0,
+                    source_conversation_id: snapshot.root_conversation_id,
+                    target_conversation_id: conversation_id,
+                    switch_outcome: Some(PillSwitchOutcome::SwitchedInPlace),
+                }),
+                ctx
+            );
+        }
         if session_id.surface_id() == self.terminal_surface_id {
             self.refresh_orchestration_tab_state(ctx);
             self.set_orchestration_tab_focus(keep_tab_focus, ctx);
@@ -2249,6 +2352,20 @@ impl TuiTerminalSessionView {
     /// from history, removes its retained TUI session, and returns focus to the
     /// root/main orchestration agent. Equivalent to the GUI's Kill agent path.
     fn kill_child_agent(&mut self, conversation_id: AIConversationId, ctx: &mut ViewContext<Self>) {
+        if let Some(snapshot) = self.compute_orchestration_tab_snapshot(ctx) {
+            warp::send_telemetry_from_ctx!(
+                BlocklistOrchestrationTelemetryEvent::PillBarInteraction(PillBarInteractionEvent {
+                    action: PillBarActionKind::Kill,
+                    pill_kind: PillBarPillKind::Child,
+                    total_pills: snapshot.children.len() + 1,
+                    total_pinned: 0,
+                    source_conversation_id: snapshot.root_conversation_id,
+                    target_conversation_id: conversation_id,
+                    switch_outcome: None,
+                }),
+                ctx
+            );
+        }
         // Clear any armed kill or exit window.
         self.exit_confirmation.disarm();
         self.child_kill_armed_conversation = None;
@@ -3520,6 +3637,7 @@ impl TuiTerminalSessionView {
                 source: CommandExecutionSource::User,
             },
         )));
+        self.emit_input_buffer_submitted_telemetry(ctx);
 
         // The submission was accepted: clear the input and return to the
         // setting-derived agent default.
@@ -3556,6 +3674,9 @@ impl TuiTerminalSessionView {
             self.cli_subagent_controller.update(ctx, |controller, ctx| {
                 controller.set_latest_instruction(block_id, prompt, ctx);
             });
+        }
+        if dispatched {
+            self.emit_input_buffer_submitted_telemetry(ctx);
         }
     }
 

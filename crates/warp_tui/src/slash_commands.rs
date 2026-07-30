@@ -13,8 +13,8 @@ use warp::search::mixer::SearchMixerEvent;
 use warp::settings::{AISettings, AppEditorSettings, TuiTheme, TuiThemeSettings};
 use warp::tui_export::{
     AcceptSlashCommandOrSavedPrompt, Appearance, ConversationSelectionHandle,
-    ParsedSlashCommandInput, SlashCommandDataSource as _, SlashCommandMixer,
-    TuiSlashCommandDataSource, UpdatedActiveCommands,
+    ParsedSlashCommandInput, SlashCommandDataSource as _, SlashCommandMixer, SlashMenuSource,
+    TelemetryEvent, TuiSlashCommandDataSource, UpdatedActiveCommands,
     should_close_slash_command_menu_for_exact_match, slash_command_query, slash_commands,
 };
 use warp_editor::model::CoreEditorModel;
@@ -417,6 +417,14 @@ impl TuiSlashCommandModel {
                     query: query.clone(),
                     list,
                 };
+                warp::send_telemetry_from_ctx!(
+                    TelemetryEvent::OpenSlashMenu {
+                        source: SlashMenuSource::UserTyped,
+                        is_inline_ui_enabled: true,
+                        is_in_agent_view: true,
+                    },
+                    ctx
+                );
             }
             TuiSlashCommandState::Open {
                 query: current_query,

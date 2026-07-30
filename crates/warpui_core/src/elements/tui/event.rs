@@ -77,6 +77,10 @@ pub enum TuiEvent {
     },
 }
 
+#[cfg(test)]
+#[path = "event_tests.rs"]
+mod tests;
+
 impl TuiEvent {
     /// Returns the terminal-cell position carried by pointer-like events.
     pub fn position(&self) -> Option<TuiPoint> {
@@ -102,6 +106,10 @@ impl TuiEvent {
             } => Some((keystroke, *is_composing)),
             _ => None,
         }
+    }
+
+    pub(crate) fn records_user_activity(&self) -> bool {
+        !matches!(self, Self::MouseMoved { .. } | Self::ScrollWheel { .. })
     }
 }
 
